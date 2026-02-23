@@ -101,8 +101,8 @@ local lastTime = tick()
 RunService.Heartbeat:Connect(function()
     frameCount += 1
     local now = tick()
-    if now - lastTime >= 1 then
-        fps = frameCount
+    if now - lastTime >= 0.5 then -- Update FPS every 0.5s for smoother avg
+        fps = math.floor(frameCount / (now - lastTime))
         frameCount = 0
         lastTime = now
     end
@@ -196,7 +196,7 @@ local function updateInfo()
             ping = math.floor(Stats.PerformanceStats.Ping:GetValue())
         end)
         infoLabel.Text = fps .. " FPS  " .. ping .. "ms"
-        task.wait(math.random() * 0.4 + 0.8)
+        task.wait(0.1)
     end
 end
 
