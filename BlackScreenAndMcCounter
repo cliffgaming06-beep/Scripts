@@ -20,23 +20,23 @@ pcall(function()
     if old then old:Destroy() end
 end)
 
--- Create overlay with MAX DisplayOrder
+-- Create overlay
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "MenuFrame"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
-screenGui.DisplayOrder = 2147483647 -- MAX INT (always on top)
+screenGui.DisplayOrder = 2147483647
 screenGui.Parent = playerGui
 
--- Black background - COVERS EVERYTHING
+-- Black background
 local blackFrame = Instance.new("Frame")
 blackFrame.Name = "Background"
-blackFrame.Size = UDim2.new(1, 0, 1, 100) -- Extra coverage
+blackFrame.Size = UDim2.new(1, 0, 1, 100)
 blackFrame.Position = UDim2.new(0, 0, 0, -50)
 blackFrame.BackgroundColor3 = Color3.new(0.02, 0.02, 0.02)
 blackFrame.BackgroundTransparency = 0
 blackFrame.BorderSizePixel = 0
-blackFrame.ZIndex = 2147483647 -- Max ZIndex
+blackFrame.ZIndex = 2147483647
 blackFrame.Parent = screenGui
 
 -- MYTHIC CHEST COUNTER
@@ -93,18 +93,35 @@ infoLabel.TextXAlignment = Enum.TextXAlignment.Center
 infoLabel.ZIndex = 2147483647
 infoLabel.Parent = infoFrame
 
--- FORCE STAY ON TOP - Re-parent if hidden
-task.spawn(function()
-    while screenGui.Parent do
-        task.wait(0.5)
+-- AGGRESSIVE FORCE ON TOP - Every frame using RenderStepped
+local connection
+task.delay(5, function() -- Wait 5s before starting aggressive mode
+    connection = RunService.RenderStepped:Connect(function()
         pcall(function()
-            -- If something tries to hide it, force it back
+            -- Force highest DisplayOrder constantly
             if screenGui.DisplayOrder ~= 2147483647 then
                 screenGui.DisplayOrder = 2147483647
             end
-            -- Ensure it's last in PlayerGui (on top)
-            screenGui.Parent = nil
-            screenGui.Parent = playerGui
+            
+            -- Move to last in PlayerGui every frame (on top of everything)
+            if playerGui:FindFirstChildOfClass("ScreenGui") ~= screenGui then
+                screenGui.Parent = nil
+                screenGui.Parent = playerGui
+            end
+        end)
+    end)
+end)
+
+-- Also check every 0.1s as backup
+task.spawn(function()
+    while screenGui.Parent do
+        task.wait(0.1)
+        pcall(function()
+            screenGui.DisplayOrder = 2147483647
+            if playerGui:FindFirstChildOfClass("ScreenGui") ~= screenGui then
+                screenGui.Parent = nil
+                screenGui.Parent = playerGui
+            end
         end)
     end
 end)
@@ -232,4 +249,4 @@ end)
 
 print("=== GPO Overlay + Mythic Chest Counter Loaded ===")
 print("Account: " .. username)
-print("DisplayOrder: MAX (always on top)")
+print("AGGRESSIVE MODE: Will force stay on top after 5s")
