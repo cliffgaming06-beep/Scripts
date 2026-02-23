@@ -1,5 +1,5 @@
 repeat task.wait() until game:IsLoaded()
-task.wait(2)
+task.wait(math.random(3, 6))
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -20,26 +20,26 @@ pcall(function()
     if old then old:Destroy() end
 end)
 
--- Create overlay
+-- Create overlay with MAX DisplayOrder
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "MenuFrame"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
-screenGui.DisplayOrder = 999 -- High but not max
+screenGui.DisplayOrder = 2147483647 -- MAX INT (always on top)
 screenGui.Parent = playerGui
 
--- Black background - COVERS ENTIRE SCREEN including top bar
+-- Black background - COVERS EVERYTHING
 local blackFrame = Instance.new("Frame")
 blackFrame.Name = "Background"
-blackFrame.Size = UDim2.new(1, 0, 1, 36) -- Extra height to cover top bar
-blackFrame.Position = UDim2.new(0, 0, 0, -36) -- Shift up to cover top bar
-blackFrame.BackgroundColor3 = Color3.new(0.02, 0.02, 0.02) -- Very dark
+blackFrame.Size = UDim2.new(1, 0, 1, 100) -- Extra coverage
+blackFrame.Position = UDim2.new(0, 0, 0, -50)
+blackFrame.BackgroundColor3 = Color3.new(0.02, 0.02, 0.02)
 blackFrame.BackgroundTransparency = 0
 blackFrame.BorderSizePixel = 0
-blackFrame.ZIndex = 1
+blackFrame.ZIndex = 2147483647 -- Max ZIndex
 blackFrame.Parent = screenGui
 
--- MYTHIC CHEST COUNTER with better styling
+-- MYTHIC CHEST COUNTER
 local chestFrame = Instance.new("Frame")
 chestFrame.Name = "ChestFrame"
 chestFrame.Size = UDim2.new(0, 140, 0, 28)
@@ -47,7 +47,7 @@ chestFrame.Position = UDim2.new(1, -150, 1, -75)
 chestFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 chestFrame.BackgroundTransparency = 0.3
 chestFrame.BorderSizePixel = 0
-chestFrame.ZIndex = 2
+chestFrame.ZIndex = 2147483647
 chestFrame.Parent = screenGui
 
 local chestCorner = Instance.new("UICorner")
@@ -59,22 +59,22 @@ chestLabel.Name = "ChestCounter"
 chestLabel.Size = UDim2.new(1, 0, 1, 0)
 chestLabel.BackgroundTransparency = 1
 chestLabel.Text = DISPLAY_NAME .. ": ..."
-chestLabel.TextColor3 = Color3.fromRGB(255, 215, 0) -- Gold color
-chestLabel.Font = Enum.Font.GothamSemibold -- Better font
+chestLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
+chestLabel.Font = Enum.Font.GothamSemibold
 chestLabel.TextSize = 14
 chestLabel.TextXAlignment = Enum.TextXAlignment.Center
-chestLabel.ZIndex = 3
+chestLabel.ZIndex = 2147483647
 chestLabel.Parent = chestFrame
 
--- FPS/Ping with better styling
+-- FPS/Ping
 local infoFrame = Instance.new("Frame")
 infoFrame.Name = "InfoFrame"
-infoFrame.Size = UDim2.new(0, 100, 0, 24)
-infoFrame.Position = UDim2.new(1, -110, 1, -40)
+infoFrame.Size = UDim2.new(0, 110, 0, 24)
+infoFrame.Position = UDim2.new(1, -120, 1, -40)
 infoFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 infoFrame.BackgroundTransparency = 0.3
 infoFrame.BorderSizePixel = 0
-infoFrame.ZIndex = 2
+infoFrame.ZIndex = 2147483647
 infoFrame.Parent = screenGui
 
 local infoCorner = Instance.new("UICorner")
@@ -87,11 +87,27 @@ infoLabel.Size = UDim2.new(1, 0, 1, 0)
 infoLabel.BackgroundTransparency = 1
 infoLabel.Text = "..."
 infoLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-infoLabel.Font = Enum.Font.Gotham -- Clean font
+infoLabel.Font = Enum.Font.Gotham
 infoLabel.TextSize = 12
 infoLabel.TextXAlignment = Enum.TextXAlignment.Center
-infoLabel.ZIndex = 3
+infoLabel.ZIndex = 2147483647
 infoLabel.Parent = infoFrame
+
+-- FORCE STAY ON TOP - Re-parent if hidden
+task.spawn(function()
+    while screenGui.Parent do
+        task.wait(0.5)
+        pcall(function()
+            -- If something tries to hide it, force it back
+            if screenGui.DisplayOrder ~= 2147483647 then
+                screenGui.DisplayOrder = 2147483647
+            end
+            -- Ensure it's last in PlayerGui (on top)
+            screenGui.Parent = nil
+            screenGui.Parent = playerGui
+        end)
+    end
+end)
 
 -- FPS calc
 local fps = 0
@@ -101,7 +117,7 @@ local lastTime = tick()
 RunService.Heartbeat:Connect(function()
     frameCount += 1
     local now = tick()
-    if now - lastTime >= 0.5 then -- Update FPS every 0.5s for smoother avg
+    if now - lastTime >= 0.5 then
         fps = math.floor(frameCount / (now - lastTime))
         frameCount = 0
         lastTime = now
@@ -165,12 +181,12 @@ local function updateChestDisplay()
         if currentCount ~= nil then
             saveCount(currentCount)
             chestLabel.Text = DISPLAY_NAME .. ": x" .. currentCount
-            chestLabel.TextColor3 = Color3.fromRGB(100, 255, 100) -- Green
+            chestLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
         else
             currentCount = loadCount()
             if currentCount then
                 chestLabel.Text = DISPLAY_NAME .. ": x" .. currentCount
-                chestLabel.TextColor3 = Color3.fromRGB(255, 200, 100) -- Orange
+                chestLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
             else
                 chestLabel.Text = DISPLAY_NAME .. ": x0"
                 chestLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -180,7 +196,7 @@ local function updateChestDisplay()
         currentCount = loadCount()
         if currentCount ~= nil then
             chestLabel.Text = DISPLAY_NAME .. ": x" .. currentCount
-            chestLabel.TextColor3 = Color3.fromRGB(255, 215, 0) -- Gold in game
+            chestLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
         else
             chestLabel.Text = DISPLAY_NAME .. ": x0"
             chestLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -188,7 +204,7 @@ local function updateChestDisplay()
     end
 end
 
--- Update FPS/Ping
+-- Update FPS/Ping FAST
 local function updateInfo()
     while screenGui.Parent do
         local ping = 0
@@ -208,18 +224,12 @@ local function updateChestLoop()
     end
 end
 
--- Start both loops with delays
+-- Start both loops
 task.delay(math.random(1, 3), function()
     task.spawn(updateInfo)
     task.spawn(updateChestLoop)
 end)
 
--- Cleanup
-screenGui.AncestryChanged:Connect(function()
-    if not screenGui.Parent then
-        screenGui:Destroy()
-    end
-end)
-
 print("=== GPO Overlay + Mythic Chest Counter Loaded ===")
 print("Account: " .. username)
+print("DisplayOrder: MAX (always on top)")
