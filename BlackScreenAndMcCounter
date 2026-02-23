@@ -16,57 +16,84 @@ local saveFile = "mythic_chest_count_" .. username .. ".txt"
 
 -- Cleanup existing
 pcall(function()
-    local old = playerGui:WaitForChild("GPOOverlay", 2)
+    local old = playerGui:WaitForChild("MenuFrame", 2)
     if old then old:Destroy() end
 end)
 
--- Create overlay with innocent name
+-- Create overlay
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "MenuFrame"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
-screenGui.DisplayOrder = 100
+screenGui.DisplayOrder = 999 -- High but not max
 screenGui.Parent = playerGui
 
--- Black background
+-- Black background - COVERS ENTIRE SCREEN including top bar
 local blackFrame = Instance.new("Frame")
 blackFrame.Name = "Background"
-blackFrame.Size = UDim2.new(1, 0, 1, 0)
-blackFrame.BackgroundColor3 = Color3.new(0.05, 0.05, 0.05)
+blackFrame.Size = UDim2.new(1, 0, 1, 36) -- Extra height to cover top bar
+blackFrame.Position = UDim2.new(0, 0, 0, -36) -- Shift up to cover top bar
+blackFrame.BackgroundColor3 = Color3.new(0.02, 0.02, 0.02) -- Very dark
 blackFrame.BackgroundTransparency = 0
 blackFrame.BorderSizePixel = 0
 blackFrame.ZIndex = 1
 blackFrame.Parent = screenGui
 
--- MYTHIC CHEST COUNTER (positioned above FPS/Ping)
+-- MYTHIC CHEST COUNTER with better styling
+local chestFrame = Instance.new("Frame")
+chestFrame.Name = "ChestFrame"
+chestFrame.Size = UDim2.new(0, 140, 0, 28)
+chestFrame.Position = UDim2.new(1, -150, 1, -75)
+chestFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+chestFrame.BackgroundTransparency = 0.3
+chestFrame.BorderSizePixel = 0
+chestFrame.ZIndex = 2
+chestFrame.Parent = screenGui
+
+local chestCorner = Instance.new("UICorner")
+chestCorner.CornerRadius = UDim.new(0, 6)
+chestCorner.Parent = chestFrame
+
 local chestLabel = Instance.new("TextLabel")
 chestLabel.Name = "ChestCounter"
-chestLabel.Size = UDim2.new(0, 200, 0, 25)
-chestLabel.Position = UDim2.new(1, -210, 1, -70) -- Above the FPS/Ping (which is at -40)
+chestLabel.Size = UDim2.new(1, 0, 1, 0)
 chestLabel.BackgroundTransparency = 1
 chestLabel.Text = DISPLAY_NAME .. ": ..."
-chestLabel.TextColor3 = Color3.new(0.9, 0.9, 0.9) -- Slightly brighter than FPS
-chestLabel.Font = Enum.Font.SourceSansBold
-chestLabel.TextSize = 16
-chestLabel.TextXAlignment = Enum.TextXAlignment.Right
-chestLabel.ZIndex = 2
-chestLabel.Parent = screenGui
+chestLabel.TextColor3 = Color3.fromRGB(255, 215, 0) -- Gold color
+chestLabel.Font = Enum.Font.GothamSemibold -- Better font
+chestLabel.TextSize = 14
+chestLabel.TextXAlignment = Enum.TextXAlignment.Center
+chestLabel.ZIndex = 3
+chestLabel.Parent = chestFrame
 
--- FPS/Ping label (your original)
+-- FPS/Ping with better styling
+local infoFrame = Instance.new("Frame")
+infoFrame.Name = "InfoFrame"
+infoFrame.Size = UDim2.new(0, 100, 0, 24)
+infoFrame.Position = UDim2.new(1, -110, 1, -40)
+infoFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+infoFrame.BackgroundTransparency = 0.3
+infoFrame.BorderSizePixel = 0
+infoFrame.ZIndex = 2
+infoFrame.Parent = screenGui
+
+local infoCorner = Instance.new("UICorner")
+infoCorner.CornerRadius = UDim.new(0, 6)
+infoCorner.Parent = infoFrame
+
 local infoLabel = Instance.new("TextLabel")
 infoLabel.Name = "StatusText"
-infoLabel.Size = UDim2.new(0, 200, 0, 30)
-infoLabel.Position = UDim2.new(1, -210, 1, -40)
+infoLabel.Size = UDim2.new(1, 0, 1, 0)
 infoLabel.BackgroundTransparency = 1
 infoLabel.Text = "..."
-infoLabel.TextColor3 = Color3.new(0.7, 0.7, 0.7)
-infoLabel.Font = Enum.Font.SourceSans
-infoLabel.TextSize = 14
-infoLabel.TextXAlignment = Enum.TextXAlignment.Right
-infoLabel.ZIndex = 2
-infoLabel.Parent = screenGui
+infoLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+infoLabel.Font = Enum.Font.Gotham -- Clean font
+infoLabel.TextSize = 12
+infoLabel.TextXAlignment = Enum.TextXAlignment.Center
+infoLabel.ZIndex = 3
+infoLabel.Parent = infoFrame
 
--- FPS calc using Heartbeat
+-- FPS calc
 local fps = 0
 local frameCount = 0
 local lastTime = tick()
@@ -138,25 +165,25 @@ local function updateChestDisplay()
         if currentCount ~= nil then
             saveCount(currentCount)
             chestLabel.Text = DISPLAY_NAME .. ": x" .. currentCount
-            chestLabel.TextColor3 = Color3.new(0.4, 1, 0.4) -- Green in menu
+            chestLabel.TextColor3 = Color3.fromRGB(100, 255, 100) -- Green
         else
             currentCount = loadCount()
             if currentCount then
                 chestLabel.Text = DISPLAY_NAME .. ": x" .. currentCount
-                chestLabel.TextColor3 = Color3.new(1, 0.8, 0.4) -- Orange
+                chestLabel.TextColor3 = Color3.fromRGB(255, 200, 100) -- Orange
             else
                 chestLabel.Text = DISPLAY_NAME .. ": x0"
-                chestLabel.TextColor3 = Color3.new(0.9, 0.9, 0.9)
+                chestLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
             end
         end
     else
         currentCount = loadCount()
         if currentCount ~= nil then
             chestLabel.Text = DISPLAY_NAME .. ": x" .. currentCount
-            chestLabel.TextColor3 = Color3.new(1, 1, 0.4) -- Yellow in game
+            chestLabel.TextColor3 = Color3.fromRGB(255, 215, 0) -- Gold in game
         else
             chestLabel.Text = DISPLAY_NAME .. ": x0"
-            chestLabel.TextColor3 = Color3.new(0.9, 0.9, 0.9)
+            chestLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
         end
     end
 end
@@ -168,7 +195,7 @@ local function updateInfo()
         pcall(function()
             ping = math.floor(Stats.PerformanceStats.Ping:GetValue())
         end)
-        infoLabel.Text = fps .. " | " .. ping .. "ms"
+        infoLabel.Text = fps .. " FPS  " .. ping .. "ms"
         task.wait(math.random() * 0.4 + 0.8)
     end
 end
@@ -177,7 +204,7 @@ end
 local function updateChestLoop()
     while screenGui.Parent do
         updateChestDisplay()
-        task.wait(3) -- Slower updates for chest (less suspicious)
+        task.wait(3)
     end
 end
 
