@@ -1,0 +1,198 @@
+repeat task.wait() until game:IsLoaded()
+task.wait(math.random(3, 6))
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Stats = game:GetService("Stats")
+local HttpService = game:GetService("HttpService")
+local player = Players.LocalPlayer
+local username = player.Name
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- CONFIGURATION
+local SEARCH_NAME = "Mythical Fruit Chest"
+local DISPLAY_NAME = "Mythic Chests"
+local saveFile = "mythic_chest_count_" .. username .. ".txt"
+
+-- Cleanup existing
+pcall(function()
+    local old = playerGui:WaitForChild("GPOOverlay", 2)
+    if old then old:Destroy() end
+end)
+
+-- Create overlay with innocent name
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "MenuFrame"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+screenGui.DisplayOrder = 100
+screenGui.Parent = playerGui
+
+-- Black background
+local blackFrame = Instance.new("Frame")
+blackFrame.Name = "Background"
+blackFrame.Size = UDim2.new(1, 0, 1, 0)
+blackFrame.BackgroundColor3 = Color3.new(0.05, 0.05, 0.05)
+blackFrame.BackgroundTransparency = 0
+blackFrame.BorderSizePixel = 0
+blackFrame.ZIndex = 1
+blackFrame.Parent = screenGui
+
+-- MYTHIC CHEST COUNTER (positioned above FPS/Ping)
+local chestLabel = Instance.new("TextLabel")
+chestLabel.Name = "ChestCounter"
+chestLabel.Size = UDim2.new(0, 200, 0, 25)
+chestLabel.Position = UDim2.new(1, -210, 1, -70) -- Above the FPS/Ping (which is at -40)
+chestLabel.BackgroundTransparency = 1
+chestLabel.Text = DISPLAY_NAME .. ": ..."
+chestLabel.TextColor3 = Color3.new(0.9, 0.9, 0.9) -- Slightly brighter than FPS
+chestLabel.Font = Enum.Font.SourceSansBold
+chestLabel.TextSize = 16
+chestLabel.TextXAlignment = Enum.TextXAlignment.Right
+chestLabel.ZIndex = 2
+chestLabel.Parent = screenGui
+
+-- FPS/Ping label (your original)
+local infoLabel = Instance.new("TextLabel")
+infoLabel.Name = "StatusText"
+infoLabel.Size = UDim2.new(0, 200, 0, 30)
+infoLabel.Position = UDim2.new(1, -210, 1, -40)
+infoLabel.BackgroundTransparency = 1
+infoLabel.Text = "..."
+infoLabel.TextColor3 = Color3.new(0.7, 0.7, 0.7)
+infoLabel.Font = Enum.Font.SourceSans
+infoLabel.TextSize = 14
+infoLabel.TextXAlignment = Enum.TextXAlignment.Right
+infoLabel.ZIndex = 2
+infoLabel.Parent = screenGui
+
+-- FPS calc using Heartbeat
+local fps = 0
+local frameCount = 0
+local lastTime = tick()
+
+RunService.Heartbeat:Connect(function()
+    frameCount += 1
+    local now = tick()
+    if now - lastTime >= 1 then
+        fps = frameCount
+        frameCount = 0
+        lastTime = now
+    end
+end)
+
+-- Mythic Chest Functions
+local function checkMainMenu()
+    local success, result = pcall(function()
+        local startGui = playerGui:FindFirstChild("Start")
+        if startGui then
+            return startGui:FindFirstChild("Menu") ~= nil
+        end
+        return false
+    end)
+    return success and result
+end
+
+local function saveCount(count)
+    pcall(function()
+        writefile(saveFile, tostring(count))
+    end)
+end
+
+local function loadCount()
+    local success, result = pcall(function()
+        if isfile(saveFile) then
+            return tonumber(readfile(saveFile))
+        end
+        return nil
+    end)
+    return success and result
+end
+
+local function getItemCount()
+    local success, result = pcall(function()
+        local statsPath = game:GetService("ReplicatedStorage")
+            :WaitForChild("Stats" .. username)
+            :WaitForChild("Inventory")
+            :WaitForChild("Inventory")
+        
+        local data = statsPath.Value
+        local inventory = HttpService:JSONDecode(data)
+        return inventory[SEARCH_NAME] or 0
+    end)
+    
+    if success then
+        return result
+    else
+        return nil
+    end
+end
+
+-- Update chest display
+local function updateChestDisplay()
+    local isInMainMenu = checkMainMenu()
+    local currentCount = nil
+    
+    if isInMainMenu then
+        currentCount = getItemCount()
+        if currentCount ~= nil then
+            saveCount(currentCount)
+            chestLabel.Text = DISPLAY_NAME .. ": x" .. currentCount
+            chestLabel.TextColor3 = Color3.new(0.4, 1, 0.4) -- Green in menu
+        else
+            currentCount = loadCount()
+            if currentCount then
+                chestLabel.Text = DISPLAY_NAME .. ": x" .. currentCount
+                chestLabel.TextColor3 = Color3.new(1, 0.8, 0.4) -- Orange
+            else
+                chestLabel.Text = DISPLAY_NAME .. ": x0"
+                chestLabel.TextColor3 = Color3.new(0.9, 0.9, 0.9)
+            end
+        end
+    else
+        currentCount = loadCount()
+        if currentCount ~= nil then
+            chestLabel.Text = DISPLAY_NAME .. ": x" .. currentCount
+            chestLabel.TextColor3 = Color3.new(1, 1, 0.4) -- Yellow in game
+        else
+            chestLabel.Text = DISPLAY_NAME .. ": x0"
+            chestLabel.TextColor3 = Color3.new(0.9, 0.9, 0.9)
+        end
+    end
+end
+
+-- Update FPS/Ping
+local function updateInfo()
+    while screenGui.Parent do
+        local ping = 0
+        pcall(function()
+            ping = math.floor(Stats.PerformanceStats.Ping:GetValue())
+        end)
+        infoLabel.Text = fps .. " | " .. ping .. "ms"
+        task.wait(math.random() * 0.4 + 0.8)
+    end
+end
+
+-- Update chest count loop
+local function updateChestLoop()
+    while screenGui.Parent do
+        updateChestDisplay()
+        task.wait(3) -- Slower updates for chest (less suspicious)
+    end
+end
+
+-- Start both loops with delays
+task.delay(math.random(1, 3), function()
+    task.spawn(updateInfo)
+    task.spawn(updateChestLoop)
+end)
+
+-- Cleanup
+screenGui.AncestryChanged:Connect(function()
+    if not screenGui.Parent then
+        screenGui:Destroy()
+    end
+end)
+
+print("=== GPO Overlay + Mythic Chest Counter Loaded ===")
+print("Account: " .. username)
