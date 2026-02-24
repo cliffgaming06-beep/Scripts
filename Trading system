@@ -1,0 +1,547 @@
+repeat task.wait(0.1) until game:IsLoaded()
+task.wait(3)
+
+-- Load external config
+if not getgenv().MC_Trading_Config then
+    error("MC_Trading_Config not found! Please load config file first.")
+end
+
+local CONFIG = getgenv().MC_Trading_Config
+
+-- Services
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
+local player = Players.LocalPlayer
+local username = player.Name
+
+-- Data folder
+local DATA_FOLDER = "MC_Trading_System/"
+
+-- ==================== UTILITY FUNCTIONS ====================
+local function log(msg)
+    if CONFIG.Debug then
+        print("[MC-TRADE] " .. msg)
+    end
+end
+
+local function errorLog(msg)
+    warn("[MC-TRADE ERROR] " .. msg)
+end
+
+local function ensureFolder()
+    if not isfolder(DATA_FOLDER) then
+        makefolder(DATA_FOLDER)
+    end
+end
+
+local function saveData(filename, data)
+    ensureFolder()
+    local success, err = pcall(function()
+        writefile(DATA_FOLDER .. filename .. ".json", HttpService:JSONEncode(data))
+    end)
+    if not success then
+        errorLog("Failed to save " .. filename .. ": " .. tostring(err))
+    end
+end
+
+local function loadData(filename)
+    local path = DATA_FOLDER .. filename .. ".json"
+    if isfile(path) then
+        local success, data = pcall(function()
+            return HttpService:JSONDecode(readfile(path))
+        end)
+        if success then return data end
+    end
+    return nil
+end
+
+local function sendWebhook(title, description, color)
+    if CONFIG.WebhookURL and CONFIG.WebhookURL ~= "" then
+        task.spawn(function()
+            pcall(function()
+                local data = {
+                    embeds = {{
+                        title = title,
+                        description = description,
+                        color = color or 3447003,
+                        timestamp = DateTime.now():ToIsoDate(),
+                        footer = {text = "Account: " .. username}
+                    }}
+                }
+                
+                -- Simple HTTP request (synapse/krnl compatible)
+                local headers = {["Content-Type"] = "application/json"}
+                local body = HttpService:JSONEncode(data)
+                
+                -- Use request function if available
+                if syn and syn.request then
+                    syn.request({Url = CONFIG.WebhookURL, Method = "POST", Headers = headers, Body = body})
+                elseif request then
+                    request({Url = CONFIG.WebhookURL, Method = "POST", Headers = headers, Body = body})
+                elseif http_request then
+                    http_request({Url = CONFIG.WebhookURL, Method = "POST", Headers = headers, Body = body})
+                end
+            end)
+        end)
+    end
+end
+
+-- ==================== ACCOUNT IDENTIFICATION ====================
+local function isFarmingAlt()
+    for _, alt in pairs(CONFIG.FarmingAlts) do
+        if alt == username then return true end
+    end
+    return false
+end
+
+local function isReceivingMain()
+    for _, main in pairs(CONFIG.ReceivingMains) do
+        if main.Name == username then return true end
+    end
+    return false
+end
+
+local function getAccountType()
+    if isFarmingAlt() then return "FARMING_ALT" end
+    if isReceivingMain() then return "RECEIVING_MAIN" end
+    return "UNKNOWN"
+end
+
+-- ==================== LOCATION CHECKS ====================
+local function isMainMenu()
+    local success, result = pcall(function()
+        local startGui = player:WaitForChild("PlayerGui"):FindFirstChild("Start")
+        return startGui and startGui:FindFirstChild("Menu") ~= nil
+    end)
+    return success and result
+end
+
+local function isTradeHub()
+    local success, result = pcall(function()
+        local pg = player:WaitForChild("PlayerGui")
+        return pg:FindFirstChild("TradeMenu") ~= nil or pg:FindFirstChild("chooseType") ~= nil
+    end)
+    return success and result
+end
+
+local function isTrading()
+    local success, result = pcall(function()
+        return player:WaitForChild("PlayerGui"):FindFirstChild("TradeGUI") ~= nil
+    end)
+    return success and result
+end
+
+-- ==================== MC COUNT ====================
+local function getMCCount()
+    local success, result = pcall(function()
+        local statsPath = ReplicatedStorage:WaitForChild("Stats" .. username)
+            :WaitForChild("Inventory")
+            :WaitForChild("Inventory")
+        local data = statsPath.Value
+        local inventory = HttpService:JSONDecode(data)
+        return inventory["Mythical Fruit Chest"] or 0
+    end)
+    
+    if success then
+        return result
+    else
+        errorLog("Failed to get MC count: " .. tostring(result))
+        return 0
+    end
+end
+
+-- ==================== TELEPORT FUNCTIONS ====================
+local function teleportToTradeHub()
+    log("Teleporting to Trade Hub...")
+    sendWebhook("Teleport", username .. " teleporting to Trade Hub", 16776960)
+    
+    local success = pcall(function()
+        ReplicatedStorage.Events.reserved:InvokeServer(CONFIG.PSCode)
+    end)
+    
+    if not success then
+        log("Reserved server failed, using PlaceId teleport")
+        TeleportService:Teleport(CONFIG.TradeHubPlaceId, player)
+    end
+    
+    task.wait(CONFIG.Timings.TeleportDelay)
+end
+
+local function joinTradeHubLobby()
+    log("Joining Trade Hub lobby...")
+    local success = pcall(function()
+        local chooseType = player:WaitForChild("PlayerGui"):WaitForChild("chooseType")
+        chooseType.Frame.RemoteEvent:FireServer("tradeHub")
+    end)
+    if success then
+        task.wait(2)
+    end
+end
+
+-- ==================== IMPEL DOWN FARMING ====================
+local function executeImpelScript()
+    log("Executing Impel Down farming script...")
+    sendWebhook("Farming", username .. " starting Impel Down farming", 3066993)
+    
+    -- Set their config
+    getgenv().Config = CONFIG.ImpelScript.Config
+    
+    -- Load the script
+    local success, err = pcall(function()
+        loadstring(game:HttpGet(CONFIG.ImpelScript.URL))()
+    end)
+    
+    if not success then
+        errorLog("Failed to load Impel script: " .. tostring(err))
+    end
+end
+
+-- ==================== TRADE FUNCTIONS ====================
+local function findPlayer(name)
+    for _, p in pairs(Players:GetPlayers()) do
+        if p.Name == name or p.DisplayName == name then
+            return p
+        end
+    end
+    return nil
+end
+
+local function sendTradeRequest(targetName)
+    log("Sending trade request to: " .. targetName)
+    
+    local target = findPlayer(targetName)
+    if not target then
+        errorLog("Target not found: " .. targetName)
+        return false
+    end
+    
+    -- Click confirmation first
+    pcall(function()
+        local confirm = player:WaitForChild("PlayerGui"):FindFirstChild("ConfirmationPrompt")
+        if confirm then
+            confirm.RemoteEvent:FireServer("I understand")
+        end
+    end)
+    
+    task.wait(0.5)
+    
+    -- Send request (using GUI interaction as fallback)
+    local success = pcall(function()
+        -- Try to find and click trade button on player
+        -- This is GUI-based, safer than remotes
+        local playerList = player:WaitForChild("PlayerGui"):FindFirstChild("Playerlist")
+        if playerList then
+            -- Find player frame and click trade
+            for _, frame in pairs(playerList:GetDescendants()) do
+                if frame:IsA("TextButton") and (frame.Text:find(targetName) or frame.Name:find(targetName)) then
+                    -- Look for trade button in this frame
+                    local tradeBtn = frame:FindFirstChild("TradeButton", true) or frame:FindFirstChild("Trade", true)
+                    if tradeBtn then
+                        firesignal(tradeBtn.MouseButton1Click)
+                        return
+                    end
+                end
+            end
+        end
+        
+        -- Fallback: Use remote if GUI method fails
+        ReplicatedStorage.trade:FireServer({requestTrade = targetName})
+    end)
+    
+    return success
+end
+
+local function acceptTrade()
+    log("Accepting trade...")
+    local success = pcall(function()
+        ReplicatedStorage.trade:FireServer({accept = true})
+    end)
+    task.wait(0.5)
+    return success
+end
+
+local function addMCToTrade(amount)
+    amount = amount or 1
+    log("Adding " .. amount .. " MC(s) to trade...")
+    
+    local success = pcall(function()
+        ReplicatedStorage.trade:FireServer({
+            addItem = "Mythical Fruit Chest",
+            customCount = amount
+        })
+    end)
+    
+    task.wait(0.5)
+    return success
+end
+
+local function confirmTrade()
+    log("Confirming trade...")
+    local success = pcall(function()
+        ReplicatedStorage.trade:FireServer({accept = true})
+    end)
+    return success
+end
+
+local function waitForTradeComplete()
+    log("Waiting for trade completion...")
+    local completed = false
+    local connection
+    
+    connection = ReplicatedStorage.Events.note.OnClientEvent:Connect(function(msg)
+        if msg and msg:find("Trade completed") then
+            completed = true
+            if connection then connection:Disconnect() end
+        end
+    end)
+    
+    -- Timeout
+    for i = 1, CONFIG.Timings.TradeTimeout do
+        if completed then break end
+        task.wait(1)
+    end
+    
+    if connection then connection:Disconnect() end
+    return completed
+end
+
+-- ==================== MAIN ACCOUNT LOGIC ====================
+local function getActiveMain()
+    for _, main in pairs(CONFIG.ReceivingMains) do
+        if main.Active then return main end
+    end
+    return CONFIG.ReceivingMains[1]
+end
+
+local function updateMainMCs(mainName, count)
+    for i, main in pairs(CONFIG.ReceivingMains) do
+        if main.Name == mainName then
+            CONFIG.ReceivingMains[i].CurrentMCs = count
+            saveData("mains_status", CONFIG.ReceivingMains)
+            break
+        end
+    end
+end
+
+local function rotateMainIfNeeded()
+    local activeMain = getActiveMain()
+    local currentMCs = getMCCount()
+    
+    updateMainMCs(activeMain.Name, currentMCs)
+    
+    if currentMCs >= activeMain.MaxMCs then
+        log(activeMain.Name .. " is full! Rotating...")
+        sendWebhook("Main Full", activeMain.Name .. " reached " .. currentMCs .. " MCs", 15158332)
+        
+        -- Find next main with space
+        for i, main in pairs(CONFIG.ReceivingMains) do
+            if main.Name ~= activeMain.Name then
+                -- Check if this main has space (load their data)
+                local mainData = loadData("main_" .. main.Name)
+                local theirMCs = mainData and mainData.CurrentMCs or 0
+                
+                if theirMCs < main.MaxMCs then
+                    -- Switch to this main
+                    for j, _ in pairs(CONFIG.ReceivingMains) do
+                        CONFIG.ReceivingMains[j].Active = false
+                    end
+                    CONFIG.ReceivingMains[i].Active = true
+                    saveData("mains_status", CONFIG.ReceivingMains)
+                    log("Rotated to: " .. main.Name)
+                    return main
+                end
+            end
+        end
+        
+        log("All mains are full!")
+        return nil
+    end
+    
+    return activeMain
+end
+
+local function receivingMainLoop()
+    log("=== RECEIVING MAIN MODE ===")
+    sendWebhook("Online", username .. " (Main) is online and waiting", 3066993)
+    
+    if not isTradeHub() then
+        teleportToTradeHub()
+    end
+    
+    joinTradeHubLobby()
+    
+    -- Save status
+    saveData("main_" .. username, {
+        Name = username,
+        CurrentMCs = getMCCount(),
+        Status = "waiting",
+        LastUpdate = os.time()
+    })
+    
+    while true do
+        -- Check if we need to rotate
+        local activeMain = rotateMainIfNeeded()
+        if not activeMain then
+            log("All mains full, waiting...")
+            task.wait(30)
+            continue
+        end
+        
+        -- Only accept trades if we're the active main
+        if activeMain.Name == username then
+            if isTrading() then
+                log("Trade detected!")
+                
+                -- Accept and confirm
+                acceptTrade()
+                task.wait(2)
+                confirmTrade()
+                
+                if waitForTradeComplete() then
+                    log("Trade completed!")
+                    sendWebhook("Trade Complete", username .. " received MCs", 3066993)
+                    
+                    -- Update count
+                    local newCount = getMCCount()
+                    updateMainMCs(username, newCount)
+                    
+                    task.wait(CONFIG.Timings.PostTradeDelay)
+                end
+            end
+        else
+            log("Not active main, waiting...")
+        end
+        
+        task.wait(1)
+    end
+end
+
+-- ==================== FARMING ALT LOGIC ====================
+local function farmingAltLoop()
+    log("=== FARMING ALT MODE ===")
+    
+    while true do
+        if isMainMenu() then
+            local mcCount = getMCCount()
+            log("MC Count: " .. mcCount)
+            
+            saveData("alt_" .. username, {
+                Name = username,
+                MCs = mcCount,
+                Status = mcCount > 0 and "has_mc" or "farming",
+                LastCheck = os.time()
+            })
+            
+            if mcCount > 0 then
+                -- Has MCs, go trade
+                log("Has " .. mcCount .. " MCs, going to trade!")
+                sendWebhook("MC Found", username .. " has " .. mcCount .. " MCs, teleporting to trade", 16776960)
+                
+                teleportToTradeHub()
+                joinTradeHubLobby()
+                
+                -- Wait for main
+                local activeMain = getActiveMain()
+                local mainFound = false
+                
+                for i = 1, 60 do
+                    if findPlayer(activeMain.Name) then
+                        mainFound = true
+                        break
+                    end
+                    task.wait(1)
+                end
+                
+                if mainFound then
+                    -- Send trade
+                    if sendTradeRequest(activeMain.Name) then
+                        task.wait(2)
+                        addMCToTrade(mcCount)
+                        task.wait(1)
+                        confirmTrade()
+                        
+                        if waitForTradeComplete() then
+                            log("Trade successful!")
+                            sendWebhook("Trade Sent", username .. " traded " .. mcCount .. " MCs to " .. activeMain.Name, 3066993)
+                            saveData("alt_" .. username, {MCs = 0, Status = "farming"})
+                        else
+                            errorLog("Trade failed or timed out")
+                        end
+                    end
+                else
+                    errorLog("Main account not found")
+                end
+                
+                -- Return to farming after trade
+                task.wait(5)
+                log("Returning to Impel Down...")
+                -- Teleport back to Impel Down place or rejoin
+                executeImpelScript()
+                
+            else
+                -- No MCs, farm
+                log("No MCs, starting Impel script...")
+                executeImpelScript()
+                -- Script runs indefinitely, so we wait here
+                while true do task.wait(60) end
+            end
+            
+        elseif isTradeHub() then
+            -- We're in trade hub but came from somewhere else
+            log("In Trade Hub unexpectedly, checking status...")
+            local status = loadData("alt_" .. username)
+            
+            if status and status.MCs > 0 then
+                -- Try to trade
+                joinTradeHubLobby()
+                -- ... trade logic same as above
+            else
+                -- Shouldn't be here, go back to farm
+                executeImpelScript()
+            end
+            
+        else
+            -- In Impel Down or unknown place
+            log("In game, checking if farming...")
+            local status = loadData("alt_" .. username)
+            
+            if not status or status.Status ~= "farming" then
+                saveData("alt_" .. username, {MCs = 0, Status = "farming"})
+            end
+            
+            -- Start farming script
+            executeImpelScript()
+            while true do task.wait(60) end
+        end
+        
+        task.wait(CONFIG.Timings.CheckInterval)
+    end
+end
+
+-- ==================== INITIALIZATION ====================
+local function init()
+    log("=" .. string.rep("=", 50))
+    log("MC TRADING SYSTEM v2.0")
+    log("Account: " .. username)
+    log("Type: " .. getAccountType())
+    log("=" .. string.rep("=", 50))
+    
+    ensureFolder()
+    
+    local accType = getAccountType()
+    
+    if accType == "FARMING_ALT" then
+        farmingAltLoop()
+    elseif accType == "RECEIVING_MAIN" then
+        receivingMainLoop()
+    else
+        errorLog("Account not in config! Add to FarmingAlts or ReceivingMains")
+        errorLog("Current username: " .. username)
+    end
+end
+
+-- Start
+init()
