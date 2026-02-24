@@ -1,12 +1,12 @@
-repeat task.wait(0.1) until game:IsLoaded()
-task.wait(5) -- Initial wait for everything to load
+repeat task.wait(1) until game:IsLoaded()  -- Slower initial wait
+task.wait(math.random(5, 8))               -- Random delay, less bot-like
 
 if not getgenv().MC_Trading_Config then
-    error("MC_Trading_Config not found!")
+    warn("Config not found")
+    return
 end
 
 local CONFIG = getgenv().MC_Trading_Config
-
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TeleportService = game:GetService("TeleportService")
@@ -16,91 +16,81 @@ local username = player.Name
 
 local DATA_FOLDER = "MC_Trading_System/"
 
--- ==================== UTILITIES ====================
-local function log(msg)
-    if CONFIG.Debug then print("[MC-TRADE] " .. msg) end
+-- Safety limits
+local actionCount = 0
+local MAX_ACTIONS_PER_MIN = 10  -- Rate limiting
+
+local function safeWait(min, max)
+    task.wait(math.random(min or 2, max or 4))
 end
 
-local function waitForMenu()
-    log("Waiting for menu to load...")
-    local startTime = tick()
-    while tick() - startTime < 10 do
-        local pg = player:FindFirstChild("PlayerGui")
-        if pg then
-            if pg:FindFirstChild("Start") or pg:FindFirstChild("chooseType") then
-                task.wait(CONFIG.Timings.MenuLoadDelay or 3)
-                return true
-            end
-        end
-        task.wait(0.5)
+local function canPerformAction()
+    actionCount = actionCount + 1
+    if actionCount > MAX_ACTIONS_PER_MIN then
+        task.wait(60)  -- Cooldown
+        actionCount = 0
     end
-    return false
+    return true
 end
 
-local function ensureFolder()
-    if not isfolder(DATA_FOLDER) then makefolder(DATA_FOLDER) end
+local function log(msg)
+    if CONFIG.Debug then print(string.format("[%.1f] %s", tick() % 1000, msg)) end
 end
 
+-- Safer file operations (less frequent)
+local lastSave = 0
 local function saveData(filename, data)
-    ensureFolder()
+    if tick() - lastSave < 10 then return end  -- Don't save too often
+    lastSave = tick()
+    
     pcall(function()
+        if not isfolder(DATA_FOLDER) then makefolder(DATA_FOLDER) end
         writefile(DATA_FOLDER .. filename .. ".json", HttpService:JSONEncode(data))
     end)
 end
 
-local function loadData(filename)
-    local path = DATA_FOLDER .. filename .. ".json"
-    if isfile(path) then
-        local success, data = pcall(function()
-            return HttpService:JSONDecode(readfile(path))
-        end)
-        if success then return data end
-    end
-    return nil
-end
+-- Safer location check (less intensive)
+local lastLocationCheck = 0
+local cachedLocation = "unknown"
 
--- ==================== ACCOUNT TYPE ====================
-local function isFarmingAlt()
-    for _, alt in pairs(CONFIG.FarmingAlts) do
-        if alt == username then return true end
-    end
-    return false
-end
-
-local function isReceivingMain()
-    for _, main in pairs(CONFIG.ReceivingMains) do
-        if main.Name == username then return true end
-    end
-    return false
-end
-
--- ==================== LOCATION CHECKS ====================
-local function isMainMenu()
+local function updateLocation()
+    if tick() - lastLocationCheck < 3 then return cachedLocation end
+    lastLocationCheck = tick()
+    
     local success, result = pcall(function()
-        local pg = player:WaitForChild("PlayerGui")
-        return pg:FindFirstChild("Start") and pg.Start:FindFirstChild("Menu")
+        local pg = player:FindFirstChild("PlayerGui")
+        if not pg then return "loading" end
+        
+        -- Check Trade Hub first (more specific)
+        if pg:FindFirstChild("TradeMenu") or pg:FindFirstChild("chooseType") then
+            return "tradehub"
+        end
+        
+        -- Check Main Menu
+        local start = pg:FindFirstChild("Start")
+        if start and start:FindFirstChild("Menu") then
+            return "mainmenu"
+        end
+        
+        return "ingame"
     end)
-    return success and result
+    
+    cachedLocation = success and result or "unknown"
+    return cachedLocation
 end
 
-local function isTradeHub()
-    local success, result = pcall(function()
-        local pg = player:WaitForChild("PlayerGui")
-        return pg:FindFirstChild("TradeMenu") or pg:FindFirstChild("chooseType")
-    end)
-    return success and result
-end
+-- Safer MC count (with cooldown)
+local lastMCCheck = 0
+local cachedMC = 0
 
-local function isTrading()
-    local success, result = pcall(function()
-        return player:WaitForChild("PlayerGui"):FindFirstChild("TradeGUI") ~= nil
-    end)
-    return success and result
-end
-
--- ==================== MC COUNT ====================
 local function getMCCount()
+    if tick() - lastMCCheck < 10 then return cachedMC end
+    lastMCCheck = tick()
+    
     local success, result = pcall(function()
+        -- Only check if we're in main menu (safer)
+        if updateLocation() ~= "mainmenu" then return cachedMC end
+        
         local statsPath = ReplicatedStorage:WaitForChild("Stats" .. username)
             :WaitForChild("Inventory")
             :WaitForChild("Inventory")
@@ -108,149 +98,111 @@ local function getMCCount()
         local inventory = HttpService:JSONDecode(data)
         return inventory["Mythical Fruit Chest"] or 0
     end)
-    return success and result or 0
+    
+    if success then cachedMC = result end
+    return cachedMC
 end
 
--- ==================== TELEPORT FUNCTIONS ====================
-local function teleportToMainMenu()
-    log("Teleporting to Main Menu...")
-    TeleportService:Teleport(CONFIG.MainGamePlaceId, player)
-end
-
-local function teleportToTradeHub()
-    log("Teleporting to Trade Hub...")
-    
-    -- Wait for menu to be ready
-    if not waitForMenu() then
-        log("Menu didn't load in time, retrying...")
-        task.wait(5)
-    end
-    
-    local success = pcall(function()
-        ReplicatedStorage.Events.reserved:InvokeServer(CONFIG.PSCode)
-    end)
-    
-    if not success then
-        log("Reserved server failed, trying main menu first...")
-        teleportToMainMenu()
-    end
-end
-
-local function joinTradeHubLobby()
-    log("Joining Trade Hub lobby...")
-    
-    -- Wait for chooseType GUI with retry
-    local chooseType = nil
-    for i = 1, 20 do
-        chooseType = player:WaitForChild("PlayerGui"):FindFirstChild("chooseType")
-        if chooseType then break end
-        task.wait(0.5)
-    end
-    
-    if not chooseType then
-        log("chooseType not found!")
+-- Safer teleport (with cooldown)
+local lastTeleport = 0
+local function safeTeleport(method, ...)
+    if tick() - lastTeleport < 15 then  -- Max 1 teleport per 15s
+        log("Teleport cooldown active")
         return false
     end
+    lastTeleport = tick()
     
-    -- Wait for frame to load
-    task.wait(CONFIG.Timings.MenuLoadDelay or 3)
+    if not canPerformAction() then return false end
     
-    -- Click Trade Hub button
-    local success = pcall(function()
-        local frame = chooseType:WaitForChild("Frame", 5)
-        if frame then
-            local remoteEvent = frame:WaitForChild("RemoteEvent", 5)
-            if remoteEvent then
-                task.wait(CONFIG.Timings.ButtonClickDelay or 1)
-                remoteEvent:FireServer("tradeHub")
-                log("Fired tradeHub event")
-                return true
-            end
-        end
-        return false
-    end)
-    
-    if success then
-        task.wait(3) -- Wait for teleport/load
-    end
-    
+    local success = pcall(method, ...)
+    if success then task.wait(8) end  -- Long wait after teleport
     return success
 end
 
--- ==================== IMPEL DOWN ====================
-local function executeImpelScript()
-    log("Starting Impel Down farming...")
+-- Join Trade Hub (single attempt, no spam)
+local function joinTradeHubLobby()
+    if not canPerformAction() then return false end
     
-    -- Set the key as GLOBAL (not in table) - THIS IS THE FIX
+    log("Joining lobby...")
+    safeWait(3, 5)  -- Wait for GUI to settle
+    
+    local success = pcall(function()
+        local chooseType = player:WaitForChild("PlayerGui"):WaitForChild("chooseType", 10)
+        if not chooseType then return false end
+        
+        safeWait(2, 3)
+        
+        local frame = chooseType:WaitForChild("Frame", 5)
+        if not frame then return false end
+        
+        local remoteEvent = frame:WaitForChild("RemoteEvent", 5)
+        if not remoteEvent then return false end
+        
+        -- Single fire, no spam
+        remoteEvent:FireServer("tradeHub")
+        return true
+    end)
+    
+    if success then safeWait(5, 7) end
+    return success
+end
+
+-- Execute Impel (safer loading)
+local function executeImpelScript()
+    log("Loading Impel script...")
+    
+    -- Set key
     getgenv().script_key = CONFIG.ImpelScriptKey
     
-    -- Set their config
-    getgenv().Config = CONFIG.ImpelScriptConfig
-    
-    -- Small delay before loading
-    task.wait(2)
-    
-    -- Load the script
-    local success, err = pcall(function()
-        loadstring(game:HttpGet(CONFIG.ImpelScriptURL))()
-    end)
-    
-    if not success then
-        log("Failed to load Impel script: " .. tostring(err))
-    end
-end
-
--- ==================== TRADE FUNCTIONS ====================
-local function findPlayer(name)
-    for _, p in pairs(Players:GetPlayers()) do
-        if p.Name == name then return p end
-    end
-    return nil
-end
-
-local function sendTradeRequest(targetName)
-    log("Sending trade to: " .. targetName)
-    
-    -- Click confirmation with delay
-    pcall(function()
-        local confirm = player:WaitForChild("PlayerGui"):FindFirstChild("ConfirmationPrompt")
-        if confirm then
-            task.wait(1)
-            confirm.RemoteEvent:FireServer("I understand")
+    -- Load in separate thread with error handling
+    task.spawn(function()
+        local success, err = pcall(function()
+            loadstring(game:HttpGet(CONFIG.ImpelScriptURL))()
+        end)
+        if not success then
+            log("Impel load failed: " .. tostring(err))
         end
     end)
-    task.wait(2)
+end
+
+-- Safer trade (minimal remote firing)
+local function performTrade(targetName, amount)
+    if not canPerformAction() then return false end
     
+    log("Trading with " .. targetName)
+    
+    -- Phase 1: Request (single attempt)
+    safeWait(2, 3)
     pcall(function()
         ReplicatedStorage.trade:FireServer({requestTrade = targetName})
     end)
-end
-
-local function addMCToTrade(amount)
-    log("Adding " .. amount .. " MC to trade")
-    task.wait(1)
+    
+    safeWait(4, 6)  -- Wait for acceptance
+    
+    -- Phase 2: Add items (single fire)
+    if not canPerformAction() then return false end
     pcall(function()
         ReplicatedStorage.trade:FireServer({
             addItem = "Mythical Fruit Chest",
             customCount = amount
         })
     end)
-    task.wait(1)
-end
-
-local function confirmTrade()
-    log("Confirming trade...")
-    task.wait(1)
+    
+    safeWait(3, 4)
+    
+    -- Phase 3: Confirm (single fire)
+    if not canPerformAction() then return false end
     pcall(function()
         ReplicatedStorage.trade:FireServer({accept = true})
     end)
-end
-
-local function waitForTradeComplete()
+    
+    -- Wait for completion (passive listening)
     local completed = false
-    local connection = ReplicatedStorage.Events.note.OnClientEvent:Connect(function(msg)
+    local connection
+    connection = ReplicatedStorage.Events.note.OnClientEvent:Connect(function(msg)
         if msg and msg:find("Trade completed") then
             completed = true
+            if connection then connection:Disconnect() end
         end
     end)
     
@@ -259,215 +211,163 @@ local function waitForTradeComplete()
         task.wait(1)
     end
     
-    connection:Disconnect()
+    if connection then connection:Disconnect() end
     return completed
 end
 
--- ==================== MAIN ACCOUNT LOGIC ====================
-local function getActiveMain()
-    for _, main in pairs(CONFIG.ReceivingMains) do
-        if main.Active then return main end
-    end
-    return CONFIG.ReceivingMains[1]
-end
-
-local function updateMainMCs(mainName, count)
-    for i, main in pairs(CONFIG.ReceivingMains) do
-        if main.Name == mainName then
-            CONFIG.ReceivingMains[i].CurrentMCs = count
-            saveData("mains_status", CONFIG.ReceivingMains)
-            break
-        end
-    end
-end
-
-local function rotateMainIfNeeded()
-    local activeMain = getActiveMain()
-    local currentMCs = getMCCount()
-    updateMainMCs(activeMain.Name, currentMCs)
+-- Main logic (slower loops)
+local function farmingAltLogic()
+    log("Farming mode")
+    local retries = 0
     
-    if currentMCs >= activeMain.MaxMCs then
-        log(activeMain.Name .. " is full! Rotating...")
+    while retries < CONFIG.MaxRetries do
+        local location = updateLocation()
         
-        for i, main in pairs(CONFIG.ReceivingMains) do
-            if main.Name ~= activeMain.Name then
-                local theirData = loadData("main_" .. main.Name)
-                local theirMCs = theirData and theirData.CurrentMCs or 0
-                
-                if theirMCs < main.MaxMCs then
-                    for j, _ in pairs(CONFIG.ReceivingMains) do
-                        CONFIG.ReceivingMains[j].Active = false
-                    end
-                    CONFIG.ReceivingMains[i].Active = true
-                    saveData("mains_status", CONFIG.ReceivingMains)
-                    log("Rotated to: " .. main.Name)
-                    return main
-                end
-            end
-        end
-        log("All mains full!")
-        return nil
-    end
-    return activeMain
-end
-
-local function receivingMainLoop()
-    log("=== RECEIVING MAIN MODE ===")
-    
-    if not isTradeHub() then
-        if isMainMenu() then
-            teleportToTradeHub()
-            task.wait(8) -- Wait for full load
-        else
-            teleportToMainMenu()
-            task.wait(8)
-            return
-        end
-    end
-    
-    -- Wait for menu and join lobby
-    if waitForMenu() then
-        joinTradeHubLobby()
-    end
-    
-    saveData("main_" .. username, {
-        Name = username,
-        CurrentMCs = getMCCount(),
-        Status = "waiting"
-    })
-    
-    while true do
-        local activeMain = rotateMainIfNeeded()
-        if not activeMain then
-            log("All full, waiting...")
-            task.wait(30)
-            continue
-        end
-        
-        if activeMain.Name == username and isTrading() then
-            log("Trade detected!")
-            pcall(function()
-                ReplicatedStorage.trade:FireServer({accept = true})
-            end)
-            task.wait(3)
-            confirmTrade()
-            
-            if waitForTradeComplete() then
-                log("Trade done!")
-                updateMainMCs(username, getMCCount())
-                task.wait(CONFIG.Timings.PostTradeDelay)
-            end
-        end
-        
-        task.wait(1)
-    end
-end
-
--- ==================== FARMING ALT LOGIC ====================
-local function farmingAltLoop()
-    log("=== FARMING ALT MODE ===")
-    
-    while true do
-        if isMainMenu() then
+        if location == "mainmenu" then
             local mcCount = getMCCount()
             log("MCs: " .. mcCount)
             
-            saveData("alt_" .. username, {
-                Name = username,
-                MCs = mcCount,
-                Status = mcCount > 0 and "trading" or "farming"
-            })
-            
             if mcCount > 0 then
-                log("Going to trade " .. mcCount .. " MCs")
-                teleportToTradeHub()
-                task.wait(8) -- Wait for teleport
+                -- Go to trade
+                saveData("alt_" .. username, {MCs = mcCount, Status = "trading"})
                 
+                if safeTeleport(function()
+                    ReplicatedStorage.Events.reserved:InvokeServer(CONFIG.PSCode)
+                end) then
+                    -- Successfully teleported, loop will continue in tradehub
+                else
+                    retries = retries + 1
+                end
             else
-                log("No MCs, farming...")
-                -- Wait for menu to be fully loaded
-                waitForMenu()
+                -- Farm
+                saveData("alt_" .. username, {MCs = 0, Status = "farming"})
+                safeWait(5, 8)  -- Wait before loading script
                 executeImpelScript()
-                while true do task.wait(60) end
+                return  -- Script handles farming, we exit
             end
             
-        elseif isTradeHub() then
-            local status = loadData("alt_" .. username)
-            local mcCount = status and status.MCs or getMCCount()
+        elseif location == "tradehub" then
+            local data = loadData("alt_" .. username) or {MCs = 0}
             
-            if mcCount > 0 then
-                -- Wait for menu then join lobby
-                if waitForMenu() then
-                    joinTradeHubLobby()
-                end
-                
-                local activeMain = getActiveMain()
-                local mainFound = false
-                
-                for i = 1, 60 do
-                    if findPlayer(activeMain.Name) then
-                        mainFound = true
-                        break
-                    end
-                    task.wait(1)
-                end
-                
-                if mainFound then
-                    sendTradeRequest(activeMain.Name)
-                    task.wait(3)
-                    addMCToTrade(mcCount)
-                    task.wait(2)
-                    confirmTrade()
+            if data.MCs > 0 then
+                if joinTradeHubLobby() then
+                    safeWait(10, 15)  -- Wait for server population
                     
-                    if waitForTradeComplete() then
-                        log("Trade success!")
-                        saveData("alt_" .. username, {MCs = 0, Status = "farming"})
-                        task.wait(3)
-                        teleportToMainMenu()
-                        task.wait(8)
+                    -- Find main
+                    local main = CONFIG.ReceivingMains[1]
+                    local found = false
+                    
+                    for i = 1, 30 do  -- 30s max wait
+                        if Players:FindFirstChild(main.Name) then
+                            found = true
+                            break
+                        end
+                        task.wait(1)
                     end
-                else
-                    log("Main not found, retrying...")
+                    
+                    if found then
+                        if performTrade(main.Name, data.MCs) then
+                            log("Trade done")
+                            saveData("alt_" .. username, {MCs = 0})
+                            safeWait(10, 15)
+                            safeTeleport(TeleportService.Teleport, CONFIG.MainGamePlaceId, player)
+                            return
+                        else
+                            retries = retries + 1
+                        end
+                    else
+                        log("Main not found")
+                        retries = retries + 1
+                    end
                 end
             else
-                log("No MCs in Trade Hub, returning to farm")
-                teleportToMainMenu()
-                task.wait(8)
+                -- Shouldn't be here
+                safeTeleport(TeleportService.Teleport, CONFIG.MainGamePlaceId, player)
+                return
             end
             
         else
-            log("In game, checking...")
-            local status = loadData("alt_" .. username)
-            
-            if not status or status.Status ~= "farming" then
-                saveData("alt_" .. username, {MCs = 0, Status = "farming"})
-            end
-            
-            waitForMenu()
-            executeImpelScript()
-            while true do task.wait(60) end
+            -- In game or loading
+            log("Location: " .. location)
+            safeWait(10, 15)
         end
         
-        task.wait(CONFIG.Timings.CheckInterval)
+        safeWait(CONFIG.Timings.CheckInterval, CONFIG.Timings.CheckInterval + 5)
+    end
+    
+    log("Max retries reached")
+end
+
+-- Receiving main (passive, minimal actions)
+local function receivingMainLogic()
+    log("Receiving mode")
+    
+    -- Just ensure we're in trade hub
+    if updateLocation() ~= "tradehub" then
+        safeTeleport(function()
+            ReplicatedStorage.Events.reserved:InvokeServer(CONFIG.PSCode)
+        end)
+        task.wait(10)
+    end
+    
+    if updateLocation() == "tradehub" then
+        joinTradeHubLobby()
+    end
+    
+    -- Passive loop - just wait for trades
+    while true do
+        if canPerformAction() then
+            -- Check if we're in a trade
+            local inTrade = pcall(function()
+                return player:WaitForChild("PlayerGui"):FindFirstChild("TradeGUI") ~= nil
+            end)
+            
+            if inTrade then
+                log("Accepting trade")
+                safeWait(2, 4)
+                
+                -- Single accept
+                pcall(function()
+                    ReplicatedStorage.trade:FireServer({accept = true})
+                end)
+                
+                safeWait(5, 8)
+                
+                -- Single confirm
+                pcall(function()
+                    ReplicatedStorage.trade:FireServer({accept = true})
+                end)
+                
+                task.wait(20)  -- Long cooldown after trade
+            end
+        end
+        
+        task.wait(5)  -- Slow check loop
     end
 end
 
--- ==================== INIT ====================
+-- Initialize
 local function init()
-    log("MC TRADING SYSTEM v2.2")
-    log("Account: " .. username)
+    log("Safe Trading System v3.0")
     
-    ensureFolder()
+    local isAlt = false
+    for _, name in pairs(CONFIG.FarmingAlts) do
+        if name == username then isAlt = true break end
+    end
     
-    -- Wait for initial menu load
-    waitForMenu()
+    local isMain = false
+    for _, main in pairs(CONFIG.ReceivingMains) do
+        if main.Name == username then isMain = true break end
+    end
     
-    if isFarmingAlt() then
-        farmingAltLoop()
-    elseif isReceivingMain() then
-        receivingMainLoop()
+    safeWait(3, 5)  -- Initial safety wait
+    
+    if isAlt then
+        farmingAltLogic()
+    elseif isMain then
+        receivingMainLogic()
     else
-        warn("Account not in config: " .. username)
+        warn("Account not configured")
     end
 end
 
