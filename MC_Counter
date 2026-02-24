@@ -1,0 +1,232 @@
+repeat task.wait() until game:IsLoaded()
+task.wait(2)
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Stats = game:GetService("Stats")
+local HttpService = game:GetService("HttpService")
+local CoreGui = game:GetService("CoreGui")
+local player = Players.LocalPlayer
+local username = player.Name
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- CONFIGURATION
+local SEARCH_NAME = "Mythical Fruit Chest"
+local DISPLAY_NAME = "Mythic Chests"
+local saveFile = "mythic_chest_count_" .. username .. ".txt"
+
+-- Function to create UI
+local function createCounter()
+    pcall(function()
+        local old = CoreGui:WaitForChild("GPOCounterCore", 1)
+        if old then old:Destroy() end
+    end)
+    
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "GPOCounterCore"
+    screenGui.ResetOnSpawn = false
+    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+    screenGui.DisplayOrder = 9999
+    screenGui.Parent = CoreGui
+    
+    -- Main container frame (bottom right)
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Name = "MainFrame"
+    mainFrame.Size = UDim2.new(0, 150, 0, 55)
+    mainFrame.Position = UDim2.new(1, -160, 1, -65) -- Bottom right
+    mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    mainFrame.BackgroundTransparency = 0.1 -- 0.1 transparency
+    mainFrame.BorderSizePixel = 0
+    mainFrame.ZIndex = 9999
+    mainFrame.Parent = screenGui
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = mainFrame
+    
+    -- MYTHIC CHEST COUNTER
+    local chestLabel = Instance.new("TextLabel")
+    chestLabel.Name = "ChestCounter"
+    chestLabel.Size = UDim2.new(1, 0, 0.5, 0)
+    chestLabel.Position = UDim2.new(0, 0, 0, 0)
+    chestLabel.BackgroundTransparency = 1
+    chestLabel.Text = DISPLAY_NAME .. ": ..."
+    chestLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
+    chestLabel.Font = Enum.Font.GothamBold
+    chestLabel.TextSize = 14
+    chestLabel.TextXAlignment = Enum.TextXAlignment.Center
+    chestLabel.ZIndex = 10000
+    chestLabel.Parent = mainFrame
+    
+    -- FPS/Ping
+    local infoLabel = Instance.new("TextLabel")
+    infoLabel.Name = "StatusText"
+    infoLabel.Size = UDim2.new(1, 0, 0.5, 0)
+    infoLabel.Position = UDim2.new(0, 0, 0.5, 0)
+    infoLabel.BackgroundTransparency = 1
+    infoLabel.Text = "..."
+    infoLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+    infoLabel.Font = Enum.Font.Gotham
+    infoLabel.TextSize = 12
+    infoLabel.TextXAlignment = Enum.TextXAlignment.Center
+    infoLabel.ZIndex = 10000
+    infoLabel.Parent = mainFrame
+    
+    return screenGui, chestLabel, infoLabel
+end
+
+-- Create immediately
+local screenGui, chestLabel, infoLabel = createCounter()
+
+-- PERSISTENT LOOP - Recreate if hidden/destroyed
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+        pcall(function()
+            if not screenGui or not screenGui.Parent then
+                screenGui, chestLabel, infoLabel = createCounter()
+                print("[" .. username .. "] Counter recreated")
+            end
+            if screenGui then
+                screenGui.Enabled = true
+            end
+        end)
+    end
+end)
+
+-- Also recreate if CoreGui cleared
+CoreGui.ChildRemoved:Connect(function(child)
+    if child.Name == "GPOCounterCore" then
+        task.wait(0.1)
+        pcall(function()
+            screenGui, chestLabel, infoLabel = createCounter()
+        end)
+    end
+end)
+
+-- FPS calc
+local fps = 0
+local frameCount = 0
+local lastTime = tick()
+
+RunService.Heartbeat:Connect(function()
+    frameCount += 1
+    local now = tick()
+    if now - lastTime >= 0.5 then
+        fps = math.floor(frameCount / (now - lastTime))
+        frameCount = 0
+        lastTime = now
+    end
+end)
+
+-- Mythic Chest Functions
+local function checkMainMenu()
+    local success, result = pcall(function()
+        local startGui = playerGui:FindFirstChild("Start")
+        if startGui then
+            return startGui:FindFirstChild("Menu") ~= nil
+        end
+        return false
+    end)
+    return success and result
+end
+
+local function saveCount(count)
+    pcall(function()
+        writefile(saveFile, tostring(count))
+    end)
+end
+
+local function loadCount()
+    local success, result = pcall(function()
+        if isfile(saveFile) then
+            return tonumber(readfile(saveFile))
+        end
+        return nil
+    end)
+    return success and result
+end
+
+local function getItemCount()
+    local success, result = pcall(function()
+        local statsPath = game:GetService("ReplicatedStorage")
+            :WaitForChild("Stats" .. username)
+            :WaitForChild("Inventory")
+            :WaitForChild("Inventory")
+        
+        local data = statsPath.Value
+        local inventory = HttpService:JSONDecode(data)
+        return inventory[SEARCH_NAME] or 0
+    end)
+    
+    if success then
+        return result
+    else
+        return nil
+    end
+end
+
+-- Update chest display
+local function updateChestDisplay()
+    local isInMainMenu = checkMainMenu()
+    local currentCount = nil
+    
+    if isInMainMenu then
+        currentCount = getItemCount()
+        if currentCount ~= nil then
+            saveCount(currentCount)
+            chestLabel.Text = DISPLAY_NAME .. ": x" .. currentCount
+            chestLabel.TextColor3 = Color3.fromRGB(100, 255, 100) -- Green
+        else
+            currentCount = loadCount()
+            if currentCount then
+                chestLabel.Text = DISPLAY_NAME .. ": x" .. currentCount
+                chestLabel.TextColor3 = Color3.fromRGB(255, 200, 100) -- Orange
+            else
+                chestLabel.Text = DISPLAY_NAME .. ": x0"
+                chestLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+            end
+        end
+    else
+        currentCount = loadCount()
+        if currentCount ~= nil then
+            chestLabel.Text = DISPLAY_NAME .. ": x" .. currentCount
+            chestLabel.TextColor3 = Color3.fromRGB(255, 215, 0) -- Gold
+        else
+            chestLabel.Text = DISPLAY_NAME .. ": x0"
+            chestLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        end
+    end
+end
+
+-- Update FPS/Ping
+local function updateInfo()
+    while true do
+        pcall(function()
+            local ping = 0
+            pcall(function()
+                ping = math.floor(Stats.PerformanceStats.Ping:GetValue())
+            end)
+            if infoLabel then
+                infoLabel.Text = fps .. " FPS  " .. ping .. "ms"
+            end
+        end)
+        task.wait(0.1)
+    end
+end
+
+-- Update chest count
+local function updateChestLoop()
+    while true do
+        pcall(updateChestDisplay)
+        task.wait(3)
+    end
+end
+
+-- Start loops
+task.spawn(updateInfo)
+task.spawn(updateChestLoop)
+
+print("=== GPO Persistent Counter Loaded ===")
+print("Account: " .. username)
+print("Position: Bottom Right | Transparency: 0.1")
