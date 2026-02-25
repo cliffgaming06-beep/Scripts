@@ -1,374 +1,544 @@
-repeat task.wait(1) until game:IsLoaded()  -- Slower initial wait
-task.wait(math.random(5, 8))               -- Random delay, less bot-like
+-- ============================================
+-- GPO TRADE SCRIPT – FINAL WITH ITEM CONFIRMATION
+-- Accounts: Sunsetblue5006 (farmer), Mynameisallah123456 (receiver)
+-- ============================================
 
-if not getgenv().MC_Trading_Config then
-    warn("Config not found")
-    return
-end
+-- Prevent multiple runs
+if _G.GPO_FinalTrade_Running then return end
+_G.GPO_FinalTrade_Running = true
 
-local CONFIG = getgenv().MC_Trading_Config
+repeat task.wait(1) until game:IsLoaded()
+task.wait(10)
+
+-- ===== CONFIG =====
+local PRIVATE_SERVER_CODE = "8Zqh4oOLVN"
+local ITEM_NAME = "Common Fish Bait"
+local RECEIVER_NAME = "Mynameisallah123456"
+local SENDER_NAME = "Sunsetblue5006"
+-- ==================
+
+-- Place IDs
+local MAIN_MENU_ID = 1730877806
+local TRADE_HUB_ID = 6811831486
+
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
-local username = player.Name
+local playerGui = player:WaitForChild("PlayerGui")
 
-local DATA_FOLDER = "MC_Trading_System/"
+-- Track trade notes
+local tradeCompleted = false
+local tradeCanceled = false
+local lastNote = ""
 
--- Safety limits
-local actionCount = 0
-local MAX_ACTIONS_PER_MIN = 10  -- Rate limiting
-
-local function safeWait(min, max)
-    task.wait(math.random(min or 2, max or 4))
+local noteRemote = ReplicatedStorage:FindFirstChild("Events") and ReplicatedStorage.Events:FindFirstChild("note")
+if noteRemote then
+    noteRemote.OnClientEvent:Connect(function(msg)
+        print("NOTE: " .. msg)
+        lastNote = msg
+        if msg:find("Trade completed!") then
+            tradeCompleted = true
+        elseif msg:find("Trade has been canceled!") then
+            tradeCanceled = true
+        end
+    end)
 end
 
-local function canPerformAction()
-    actionCount = actionCount + 1
-    if actionCount > MAX_ACTIONS_PER_MIN then
-        task.wait(60)  -- Cooldown
-        actionCount = 0
+local function randomDelay(min, max)
+    task.wait(min + math.random() * (max - min))
+end
+
+-- ============================================
+-- INVENTORY CHECK FROM STATS (MAIN MENU)
+-- ============================================
+local function getItemCount(itemName)
+    local statsFolder = ReplicatedStorage:FindFirstChild("Stats" .. player.Name)
+    if not statsFolder then
+        statsFolder = ReplicatedStorage:WaitForChild("Stats" .. player.Name, 10)
+        if not statsFolder then return 0 end
     end
+    local invFolder = statsFolder:FindFirstChild("Inventory")
+    if not invFolder then return 0 end
+    local invData = invFolder:FindFirstChild("Inventory")
+    if not invData then return 0 end
+    local json = invData.Value
+    if type(json) ~= "string" then return 0 end
+    local success, data = pcall(function() return HttpService:JSONDecode(json) end)
+    if not success then return 0 end
+    return data[itemName] or 0
+end
+
+-- ============================================
+-- TELEPORT TO MAIN MENU (for sender only)
+-- ============================================
+local function leaveTradeHub()
+    if game.PlaceId == TRADE_HUB_ID then
+        print("Leaving trade hub to main menu...")
+        task.wait(2)
+        TeleportService:Teleport(MAIN_MENU_ID)
+    end
+end
+
+-- ============================================
+-- JOIN PRIVATE SERVER (FROM MAIN MENU)
+-- ============================================
+local function joinPrivateServer()
+    if game.PlaceId ~= MAIN_MENU_ID then
+        warn("Not in main menu, cannot join private server.")
+        return false
+    end
+
+    print("In main menu. Joining private server...")
+    local reserved = ReplicatedStorage:FindFirstChild("Events") and ReplicatedStorage.Events:FindFirstChild("reserved")
+    if not reserved then
+        warn("reserved remote not found")
+        return false
+    end
+
+    coroutine.wrap(function()
+        pcall(function() reserved:InvokeServer(PRIVATE_SERVER_CODE) end)
+    end)()
+
+    local chooseType = nil
+    local start = tick()
+    while tick() - start < 30 do
+        chooseType = playerGui:FindFirstChild("chooseType")
+        if chooseType then break end
+        task.wait(1)
+    end
+    if not chooseType then
+        warn("chooseType GUI not found")
+        return false
+    end
+
+    local frame = chooseType:FindFirstChild("Frame")
+    if not frame then
+        warn("Frame not found")
+        return false
+    end
+
+    local remoteEvent = frame:FindFirstChild("RemoteEvent")
+    if not remoteEvent then
+        warn("RemoteEvent not found")
+        return false
+    end
+
+    print("Selecting Trade Hub...")
+    remoteEvent:FireServer("tradeHub")
+    randomDelay(10, 12)
     return true
 end
 
-local function log(msg)
-    if CONFIG.Debug then print(string.format("[%.1f] %s", tick() % 1000, msg)) end
-end
-
--- Safer file operations (less frequent)
-local lastSave = 0
-local function saveData(filename, data)
-    if tick() - lastSave < 10 then return end  -- Don't save too often
-    lastSave = tick()
-    
-    pcall(function()
-        if not isfolder(DATA_FOLDER) then makefolder(DATA_FOLDER) end
-        writefile(DATA_FOLDER .. filename .. ".json", HttpService:JSONEncode(data))
-    end)
-end
-
--- Safer location check (less intensive)
-local lastLocationCheck = 0
-local cachedLocation = "unknown"
-
-local function updateLocation()
-    if tick() - lastLocationCheck < 3 then return cachedLocation end
-    lastLocationCheck = tick()
-    
-    local success, result = pcall(function()
-        local pg = player:FindFirstChild("PlayerGui")
-        if not pg then return "loading" end
-        
-        -- Check Trade Hub first (more specific)
-        if pg:FindFirstChild("TradeMenu") or pg:FindFirstChild("chooseType") then
-            return "tradehub"
+-- ============================================
+-- HANDLE "I UNDERSTAND" PROMPT
+-- ============================================
+local function handleConfirmation()
+    print("Waiting for ConfirmationPrompt (up to 15s)...")
+    local prompt = nil
+    local start = tick()
+    while tick() - start < 15 do
+        prompt = playerGui:FindFirstChild("ConfirmationPrompt")
+        if prompt then
+            print("ConfirmationPrompt found.")
+            break
         end
-        
-        -- Check Main Menu
-        local start = pg:FindFirstChild("Start")
-        if start and start:FindFirstChild("Menu") then
-            return "mainmenu"
-        end
-        
-        return "ingame"
-    end)
-    
-    cachedLocation = success and result or "unknown"
-    return cachedLocation
-end
-
--- Safer MC count (with cooldown)
-local lastMCCheck = 0
-local cachedMC = 0
-
-local function getMCCount()
-    if tick() - lastMCCheck < 10 then return cachedMC end
-    lastMCCheck = tick()
-    
-    local success, result = pcall(function()
-        -- Only check if we're in main menu (safer)
-        if updateLocation() ~= "mainmenu" then return cachedMC end
-        
-        local statsPath = ReplicatedStorage:WaitForChild("Stats" .. username)
-            :WaitForChild("Inventory")
-            :WaitForChild("Inventory")
-        local data = statsPath.Value
-        local inventory = HttpService:JSONDecode(data)
-        return inventory["Mythical Fruit Chest"] or 0
-    end)
-    
-    if success then cachedMC = result end
-    return cachedMC
-end
-
--- Safer teleport (with cooldown)
-local lastTeleport = 0
-local function safeTeleport(method, ...)
-    if tick() - lastTeleport < 15 then  -- Max 1 teleport per 15s
-        log("Teleport cooldown active")
-        return false
+        task.wait(0.5)
     end
-    lastTeleport = tick()
-    
-    if not canPerformAction() then return false end
-    
-    local success = pcall(method, ...)
-    if success then task.wait(8) end  -- Long wait after teleport
-    return success
-end
 
--- Join Trade Hub (single attempt, no spam)
-local function joinTradeHubLobby()
-    if not canPerformAction() then return false end
-    
-    log("Joining lobby...")
-    safeWait(3, 5)  -- Wait for GUI to settle
-    
-    local success = pcall(function()
-        local chooseType = player:WaitForChild("PlayerGui"):WaitForChild("chooseType", 10)
-        if not chooseType then return false end
-        
-        safeWait(2, 3)
-        
-        local frame = chooseType:WaitForChild("Frame", 5)
-        if not frame then return false end
-        
-        local remoteEvent = frame:WaitForChild("RemoteEvent", 5)
-        if not remoteEvent then return false end
-        
-        -- Single fire, no spam
-        remoteEvent:FireServer("tradeHub")
-        return true
-    end)
-    
-    if success then safeWait(5, 7) end
-    return success
-end
-
--- Execute Impel (safer loading)
-local function executeImpelScript()
-    log("Loading Impel script...")
-    
-    -- Set key
-    getgenv().script_key = CONFIG.ImpelScriptKey
-    
-    -- Load in separate thread with error handling
-    task.spawn(function()
-        local success, err = pcall(function()
-            loadstring(game:HttpGet(CONFIG.ImpelScriptURL))()
-        end)
-        if not success then
-            log("Impel load failed: " .. tostring(err))
+    if prompt then
+        local remote = prompt:FindFirstChild("RemoteEvent")
+        if remote then
+            remote:FireServer("I understand")
+            print("Fired 'I understand'")
+            task.wait(1)
+        else
+            warn("RemoteEvent not found in prompt")
         end
-    end)
+    else
+        print("No ConfirmationPrompt appeared within 15s – assuming already accepted or trade opened directly.")
+    end
 end
 
--- Safer trade (minimal remote firing)
-local function performTrade(targetName, amount)
-    if not canPerformAction() then return false end
-    
-    log("Trading with " .. targetName)
-    
-    -- Phase 1: Request (single attempt)
-    safeWait(2, 3)
-    pcall(function()
-        ReplicatedStorage.trade:FireServer({requestTrade = targetName})
-    end)
-    
-    safeWait(4, 6)  -- Wait for acceptance
-    
-    -- Phase 2: Add items (single fire)
-    if not canPerformAction() then return false end
-    pcall(function()
-        ReplicatedStorage.trade:FireServer({
-            addItem = "Mythical Fruit Chest",
-            customCount = amount
-        })
-    end)
-    
-    safeWait(3, 4)
-    
-    -- Phase 3: Confirm (single fire)
-    if not canPerformAction() then return false end
-    pcall(function()
-        ReplicatedStorage.trade:FireServer({accept = true})
-    end)
-    
-    -- Wait for completion (passive listening)
-    local completed = false
-    local connection
-    connection = ReplicatedStorage.Events.note.OnClientEvent:Connect(function(msg)
-        if msg and msg:find("Trade completed") then
-            completed = true
-            if connection then connection:Disconnect() end
+-- ============================================
+-- CHECK IF ITEM ALREADY ADDED IN TRADE (PLAYER'S SIDE)
+-- ============================================
+local function hasAddedItem(itemName)
+    local tradeGUI = playerGui:FindFirstChild("TradeGUI")
+    if not tradeGUI then return false end
+    local main = tradeGUI:FindFirstChild("Main")
+    if not main then return false end
+    local playerItems = main:FindFirstChild("Player") and main.Player:FindFirstChild("Items")
+    if not playerItems then return false end
+    local item = playerItems:FindFirstChild(itemName)
+    if item then
+        local amountLabel = item:FindFirstChild("Amount")
+        if amountLabel and amountLabel:IsA("TextLabel") then
+            local text = amountLabel.Text
+            if text:match("x(%d+)") then
+                return true
+            end
         end
-    end)
-    
-    for i = 1, CONFIG.Timings.TradeTimeout do
-        if completed then break end
+    end
+    return false
+end
+
+-- ============================================
+-- CHECK IF TRADER HAS ADDED ANY ITEM (RECEIVER'S JUNK)
+-- ============================================
+local function traderHasAnyItem()
+    local tradeGUI = playerGui:FindFirstChild("TradeGUI")
+    if not tradeGUI then return false end
+    local main = tradeGUI:FindFirstChild("Main")
+    if not main then return false end
+    local traderItems = main:FindFirstChild("Trader") and main.Trader:FindFirstChild("Items")
+    if not traderItems then return false end
+    -- If there's any child in Items folder, trader has added something
+    return #traderItems:GetChildren() > 0
+end
+
+-- ============================================
+-- WAIT FOR BOTH SIDES TO HAVE ITEMS
+-- ============================================
+local function waitForBothItemsAdded(timeout)
+    local start = tick()
+    while tick() - start < timeout do
+        if hasAddedItem(ITEM_NAME) and traderHasAnyItem() then
+            print("Both sides have items.")
+            return true
+        end
         task.wait(1)
     end
-    
-    if connection then connection:Disconnect() end
-    return completed
+    print("Timeout waiting for both sides to have items.")
+    return false
 end
 
--- Main logic (slower loops)
-local function farmingAltLogic()
-    log("Farming mode")
-    local retries = 0
-    
-    while retries < CONFIG.MaxRetries do
-        local location = updateLocation()
-        
-        if location == "mainmenu" then
-            local mcCount = getMCCount()
-            log("MCs: " .. mcCount)
-            
-            if mcCount > 0 then
-                -- Go to trade
-                saveData("alt_" .. username, {MCs = mcCount, Status = "trading"})
-                
-                if safeTeleport(function()
-                    ReplicatedStorage.Events.reserved:InvokeServer(CONFIG.PSCode)
-                end) then
-                    -- Successfully teleported, loop will continue in tradehub
-                else
-                    retries = retries + 1
-                end
-            else
-                -- Farm
-                saveData("alt_" .. username, {MCs = 0, Status = "farming"})
-                safeWait(5, 8)  -- Wait before loading script
-                executeImpelScript()
-                return  -- Script handles farming, we exit
-            end
-            
-        elseif location == "tradehub" then
-            local data = loadData("alt_" .. username) or {MCs = 0}
-            
-            if data.MCs > 0 then
-                if joinTradeHubLobby() then
-                    safeWait(10, 15)  -- Wait for server population
-                    
-                    -- Find main
-                    local main = CONFIG.ReceivingMains[1]
-                    local found = false
-                    
-                    for i = 1, 30 do  -- 30s max wait
-                        if Players:FindFirstChild(main.Name) then
-                            found = true
-                            break
-                        end
-                        task.wait(1)
-                    end
-                    
-                    if found then
-                        if performTrade(main.Name, data.MCs) then
-                            log("Trade done")
-                            saveData("alt_" .. username, {MCs = 0})
-                            safeWait(10, 15)
-                            safeTeleport(TeleportService.Teleport, CONFIG.MainGamePlaceId, player)
-                            return
-                        else
-                            retries = retries + 1
-                        end
-                    else
-                        log("Main not found")
-                        retries = retries + 1
-                    end
-                end
-            else
-                -- Shouldn't be here
-                safeTeleport(TeleportService.Teleport, CONFIG.MainGamePlaceId, player)
-                return
-            end
-            
-        else
-            -- In game or loading
-            log("Location: " .. location)
-            safeWait(10, 15)
+-- ============================================
+-- MONITOR STATUS AND RE‑ACCEPT IF NEEDED
+-- ============================================
+local function monitorAndReAccept(tradeMain, tradeRemote, maxAttempts)
+    local playerStatus = tradeMain:FindFirstChild("Player") and tradeMain.Player:FindFirstChild("Status")
+    local traderStatus = tradeMain:FindFirstChild("Trader") and tradeMain.Trader:FindFirstChild("Status")
+    if not playerStatus or not traderStatus then return false end
+
+    local attempts = 0
+    while attempts < maxAttempts do
+        if tradeCompleted then
+            print("Trade completed detected via note")
+            return true
         end
-        
-        safeWait(CONFIG.Timings.CheckInterval, CONFIG.Timings.CheckInterval + 5)
+        if tradeCanceled then
+            print("Trade canceled detected")
+            return false
+        end
+        if playerStatus.Text == "ACCEPTED" and traderStatus.Text == "ACCEPTED" then
+            print("Both accepted.")
+            return true
+        elseif playerStatus.Text == "DECIDING" then
+            print("Status went back to DECIDING, re‑accepting...")
+            tradeRemote:FireServer({ accept = true })
+            attempts = attempts + 1
+        end
+        task.wait(1)
     end
-    
-    log("Max retries reached")
+    return false
 end
 
--- Receiving main (passive, minimal actions)
-local function receivingMainLogic()
-    log("Receiving mode")
-    
-    -- Just ensure we're in trade hub
-    if updateLocation() ~= "tradehub" then
-        safeTeleport(function()
-            ReplicatedStorage.Events.reserved:InvokeServer(CONFIG.PSCode)
+-- ============================================
+-- SENDER (FARMER) FUNCTIONS
+-- ============================================
+local function sendTrade()
+    print("Sending trade invite...")
+    coroutine.wrap(function()
+        pcall(function()
+            ReplicatedStorage.Events.trade:InvokeServer({ invitedPlayer = RECEIVER_NAME, invite = true })
         end)
-        task.wait(10)
+    end)()
+    randomDelay(2, 3)
+    handleConfirmation()
+    randomDelay(2, 3)
+end
+
+local function executeTrade()
+    print("Waiting for TradeGUI (up to 20s)...")
+    local tradeGUI = nil
+    local start = tick()
+    while tick() - start < 20 do
+        tradeGUI = playerGui:FindFirstChild("TradeGUI")
+        if tradeGUI then
+            print("TradeGUI found.")
+            break
+        end
+        task.wait(1)
     end
-    
-    if updateLocation() == "tradehub" then
-        joinTradeHubLobby()
+    if not tradeGUI then
+        print("TradeGUI not found – trade may have failed.")
+        return false
     end
-    
-    -- Passive loop - just wait for trades
-    while true do
-        if canPerformAction() then
-            -- Check if we're in a trade
-            local inTrade = pcall(function()
-                return player:WaitForChild("PlayerGui"):FindFirstChild("TradeGUI") ~= nil
-            end)
-            
-            if inTrade then
-                log("Accepting trade")
-                safeWait(2, 4)
-                
-                -- Single accept
-                pcall(function()
-                    ReplicatedStorage.trade:FireServer({accept = true})
-                end)
-                
-                safeWait(5, 8)
-                
-                -- Single confirm
-                pcall(function()
-                    ReplicatedStorage.trade:FireServer({accept = true})
-                end)
-                
-                task.wait(20)  -- Long cooldown after trade
+    local main = tradeGUI:FindFirstChild("Main")
+    if not main then return false end
+
+    local tradeRemote = ReplicatedStorage:FindFirstChild("trade")
+    if not tradeRemote or not tradeRemote:IsA("RemoteEvent") then
+        tradeRemote = ReplicatedStorage:FindFirstChild("Events") and ReplicatedStorage.Events:FindFirstChild("trade")
+    end
+    if not tradeRemote then
+        warn("Trade remote not found")
+        return false
+    end
+
+    -- Add item if not already present
+    if not hasAddedItem(ITEM_NAME) then
+        tradeRemote:FireServer({ addItem = ITEM_NAME, customCount = 1 })
+        print("Added item, waiting for confirmation...")
+        local waitStart = tick()
+        while tick() - waitStart < 5 do
+            if hasAddedItem(ITEM_NAME) then
+                print("Item confirmed in trade window.")
+                break
+            end
+            task.wait(0.5)
+        end
+        if not hasAddedItem(ITEM_NAME) then
+            print("Item did not appear, retrying...")
+            tradeRemote:FireServer({ addItem = ITEM_NAME, customCount = 1 })
+            task.wait(2)
+            if not hasAddedItem(ITEM_NAME) then
+                print("Failed to add item, aborting trade.")
+                return false
             end
         end
-        
-        task.wait(5)  -- Slow check loop
-    end
-end
-
--- Initialize
-local function init()
-    log("Safe Trading System v3.0")
-    
-    local isAlt = false
-    for _, name in pairs(CONFIG.FarmingAlts) do
-        if name == username then isAlt = true break end
-    end
-    
-    local isMain = false
-    for _, main in pairs(CONFIG.ReceivingMains) do
-        if main.Name == username then isMain = true break end
-    end
-    
-    safeWait(3, 5)  -- Initial safety wait
-    
-    if isAlt then
-        farmingAltLogic()
-    elseif isMain then
-        receivingMainLogic()
     else
-        warn("Account not configured")
+        print("Item already added")
     end
+
+    -- Wait for receiver to add their junk item
+    if not waitForBothItemsAdded(20) then
+        print("Receiver did not add item in time, aborting.")
+        return false
+    end
+
+    randomDelay(2, 3)
+    tradeRemote:FireServer({ accept = true })
+    print("Accepted")
+
+    -- Monitor status and re‑accept if needed
+    local success = monitorAndReAccept(main, tradeRemote, 5)
+
+    if success then
+        print("Both accepted, waiting for countdown/notes...")
+        randomDelay(10, 12)
+    end
+
+    if tradeCompleted then
+        print("Trade completed successfully.")
+    elseif tradeCanceled then
+        print("Trade was canceled.")
+    else
+        print("Trade ended without note (may be incomplete).")
+    end
+
+    return true
 end
 
-init()
+-- ============================================
+-- RECEIVER FUNCTIONS
+-- ============================================
+local function acceptPendingTrade()
+    local tradeMenu = playerGui:FindFirstChild("TradeMenu")
+    if not tradeMenu then return false end
+    local main = tradeMenu:FindFirstChild("Main")
+    if not main then return false end
+    local menu = main:FindFirstChild("Menu")
+    if not menu then return false end
+    local pending = menu:FindFirstChild("PendingTrades")
+    if not pending then return false end
+    local list = pending:FindFirstChild("List")
+    if not list then return false end
+
+    for _, child in ipairs(list:GetChildren()) do
+        if child.Name == SENDER_NAME then
+            print("Trade found. Accepting (non‑blocking)...")
+
+            coroutine.wrap(function()
+                pcall(function()
+                    ReplicatedStorage.Events.trade:InvokeServer({
+                        tradeFeedback = true,
+                        tradePlayer = Players[SENDER_NAME],
+                        accept = true
+                    })
+                end)
+            end)()
+
+            handleConfirmation()
+            return true
+        end
+    end
+    return false
+end
+
+local function receiverCompleteTrade()
+    print("Waiting for TradeGUI (up to 20s)...")
+    local tradeGUI = nil
+    local start = tick()
+    while tick() - start < 20 do
+        tradeGUI = playerGui:FindFirstChild("TradeGUI")
+        if tradeGUI then
+            print("TradeGUI found.")
+            break
+        end
+        task.wait(1)
+    end
+    if not tradeGUI then
+        print("TradeGUI not found – trade may have failed.")
+        return false
+    end
+    local main = tradeGUI:FindFirstChild("Main")
+    if not main then return false end
+
+    local tradeRemote = ReplicatedStorage:FindFirstChild("trade")
+    if not tradeRemote or not tradeRemote:IsA("RemoteEvent") then
+        tradeRemote = ReplicatedStorage:FindFirstChild("Events") and ReplicatedStorage.Events:FindFirstChild("trade")
+    end
+    if not tradeRemote then
+        warn("Trade remote not found")
+        return false
+    end
+
+    -- Add junk item if not already present
+    if not hasAddedItem(ITEM_NAME) then
+        tradeRemote:FireServer({ addItem = ITEM_NAME, customCount = 1 })
+        print("Added junk item, waiting for confirmation...")
+        local waitStart = tick()
+        while tick() - waitStart < 5 do
+            if hasAddedItem(ITEM_NAME) then
+                print("Junk item confirmed.")
+                break
+            end
+            task.wait(0.5)
+        end
+        if not hasAddedItem(ITEM_NAME) then
+            print("Junk item did not appear, retrying...")
+            tradeRemote:FireServer({ addItem = ITEM_NAME, customCount = 1 })
+            task.wait(2)
+            if not hasAddedItem(ITEM_NAME) then
+                print("Failed to add junk item, aborting trade.")
+                return false
+            end
+        end
+    else
+        print("Junk item already added")
+    end
+
+    -- Wait for sender to add their item
+    if not waitForBothItemsAdded(20) then
+        print("Sender did not add item in time, aborting.")
+        return false
+    end
+
+    randomDelay(2, 3)
+    tradeRemote:FireServer({ accept = true })
+    print("Accepted")
+
+    local success = monitorAndReAccept(main, tradeRemote, 5)
+
+    if success then
+        randomDelay(10, 12)
+    else
+        print("Trade did not reach accepted state within timeout.")
+        return false
+    end
+
+    -- Wait for trade to close
+    local closed = false
+    start = tick()
+    while tick() - start < 15 do
+        if not playerGui:FindFirstChild("TradeGUI") then
+            closed = true
+            break
+        end
+        task.wait(1)
+    end
+    return closed
+end
+
+-- ============================================
+-- IMPEL DOWN FARMING SCRIPT (PLACEHOLDER)
+-- ============================================
+local function farmImpelDown()
+    print("=== STARTING IMPEL DOWN FARM ===")
+    task.wait(60)
+    print("=== FINISHED FARMING ===")
+end
+
+-- ============================================
+-- MAIN EXECUTION
+-- ============================================
+if player.Name == SENDER_NAME then
+    print("=== SENDER MODE ===")
+
+    if game.PlaceId == TRADE_HUB_ID then
+        print("In trade hub. Attempting trade...")
+        sendTrade()
+        local success = executeTrade()
+        if success then
+            print("Trade completed.")
+        else
+            print("Trade failed.")
+        end
+        leaveTradeHub()
+
+    elseif game.PlaceId == MAIN_MENU_ID then
+        local itemCount = getItemCount(ITEM_NAME)
+        print("Current " .. ITEM_NAME .. " count: " .. itemCount)
+
+        if itemCount > 0 then
+            print("Items found. Joining trade hub...")
+            joinPrivateServer()
+        else
+            print("No items found. Starting Impel Down farm...")
+            farmImpelDown()
+        end
+
+    else
+        warn("Unknown place ID: " .. game.PlaceId)
+    end
+
+elseif player.Name == RECEIVER_NAME then
+    print("=== RECEIVER MODE ===")
+
+    if game.PlaceId == TRADE_HUB_ID then
+        print("Receiver ready in trade hub. Waiting for trades...")
+        local cooldown = 0
+        while true do
+            if cooldown > 0 then
+                task.wait(cooldown)
+                cooldown = 0
+            end
+            if acceptPendingTrade() then
+                local success = receiverCompleteTrade()
+                if success then
+                    print("Trade completed. Cooldown before next trade.")
+                else
+                    print("Trade failed. Cooldown before next trade.")
+                end
+                tradeCompleted = false
+                tradeCanceled = false
+                cooldown = 5
+            else
+                task.wait(3)
+            end
+        end
+
+    elseif game.PlaceId == MAIN_MENU_ID then
+        print("In main menu. Joining trade hub...")
+        joinPrivateServer()
+
+    else
+        warn("Unknown place ID: " .. game.PlaceId)
+    end
+
+else
+    warn("Unknown account: " .. player.Name)
+end
